@@ -33,7 +33,9 @@ public enum Download {
     }
 
     /// Downloads `url` into `folder` under the server's file name (Content-Disposition, else the URL's last
-    /// part), so an archive keeps its extension. Replaces a file of that name. Returns the file.
+    /// part), so an archive keeps its extension. With `options.prefersSuggestedFilename`, URLSession's suggested
+    /// name comes first (Content-Disposition, else the redirected URL's last part). Replaces a file of that name.
+    /// Returns the file.
     @discardableResult
     public static func file(_ url: URL, into folder: URL, sha256: String? = nil, options: DownloadOptions = DownloadOptions(),
                             progress: (@Sendable (DownloadProgress) -> Void)? = nil) async throws -> URL {
@@ -42,7 +44,7 @@ public enum Download {
         let key = SHA256Hex.of(Data(url.absoluteString.utf8)).prefix(16)
         let part = folder.appending(path: ".download-\(key).part")
         let response = try await fetch(url, into: part, expected: expected, options: options, progress: progress)
-        let destination = folder.appending(path: fileName(response, url: url))
+        let destination = folder.appending(path: fileName(response, url: url, prefersSuggested: options.prefersSuggestedFilename))
         try moveIntoPlace(part, at: destination)
         return destination
     }
@@ -164,8 +166,10 @@ public enum Download {
         return hash
     }
 
-    static func fileName(_ response: HTTPURLResponse, url: URL) -> String {
-        let candidates = [contentDispositionName(response), url.lastPathComponent.removingPercentEncoding, response.suggestedFilename]
+    static func fileName(_ response: HTTPURLResponse, url: URL, prefersSuggested: Bool = false) -> String {
+        let candidates = prefersSuggested
+            ? [response.suggestedFilename, url.lastPathComponent.removingPercentEncoding]
+            : [contentDispositionName(response), url.lastPathComponent.removingPercentEncoding, response.suggestedFilename]
         for case let name? in candidates {
             let clean = (name as NSString).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty, clean != "/", clean != ".", clean != ".." { return clean }

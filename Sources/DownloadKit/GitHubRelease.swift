@@ -15,8 +15,11 @@ public struct GitHubRelease: Codable, Hashable, Sendable, Identifiable {
         public var contentType: String?
         /// When the file was last uploaded: with `id`, it tells a new build under the same name.
         public var updated: Date?
+        /// `updated_at` exactly as the API wrote it ("2026-10-02T00:00:00Z"), for an identity recorded as text.
+        public var updatedText: String?
 
-        public init(id: Int, name: String, url: URL, size: Int64, sha256: String? = nil, contentType: String? = nil, updated: Date? = nil) {
+        public init(id: Int, name: String, url: URL, size: Int64, sha256: String? = nil, contentType: String? = nil, updated: Date? = nil,
+                    updatedText: String? = nil) {
             self.id = id
             self.name = name
             self.url = url
@@ -24,9 +27,12 @@ public struct GitHubRelease: Codable, Hashable, Sendable, Identifiable {
             self.sha256 = sha256
             self.contentType = contentType
             self.updated = updated
+            self.updatedText = updatedText
         }
     }
 
+    /// The API's id. A feed that leaves it out (a hand-written catalog, some mirrors) gets a stable negative number
+    /// made from the tag; an asset's from its download URL. Never 0.
     public var id: Int
     /// "v1.2.0".
     public var tag: String
@@ -156,38 +162,41 @@ public struct GitHubRelease: Codable, Hashable, Sendable, Identifiable {
         return request
     }
 
-    private static func decoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let text = try decoder.singleValueContainer().decode(String.self)
-            if let date = try? Date(text, strategy: .iso8601) { return date }
-            if let date = try? Date(text, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)) { return date }
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Not an ISO 8601 date: \(text)"))
-        }
-        return decoder
+    private static func decoder() -> JSONDecoder { JSONDecoder() }
+
+    /// An ISO 8601 date, with or without fractional seconds or an offset; nil for anything else.
+    static func date(_ text: String?) -> Date? {
+        guard let text else { return nil }
+        if let date = try? Date(text, strategy: .iso8601) { return date }
+        return try? Date(text, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+    }
+
+    /// A stable id for a feed without one: negative, so it never meets a real one, and never 0.
+    static func fallbackID(_ text: String) -> Int {
+        -(Int(SHA256Hex.of(Data(text.utf8)).prefix(12), radix: 16) ?? 0) - 1
     }
 }
 
 /// The API's shape, read leniently: Gitea leaves out some fields and GitHub sends null for others.
 private struct APIRelease: Decodable {
     struct Asset: Decodable {
-        var id: Int
+        var id: Int?
         var name: String
         var browser_download_url: URL
         var size: Int64?
         var digest: String?
         var content_type: String?
-        var updated_at: Date?
-        var created_at: Date?
+        var updated_at: String?
+        var created_at: String?
     }
 
-    var id: Int
+    var id: Int?
     var tag_name: String
     var name: String?
     var body: String?
     var html_url: URL?
-    var published_at: Date?
-    var created_at: Date?
+    var published_at: String?
+    var created_at: String?
     var prerelease: Bool?
     var draft: Bool?
     var assets: [Asset]?
@@ -195,12 +204,16 @@ private struct APIRelease: Decodable {
     var release: GitHubRelease {
         let title = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         return GitHubRelease(
-            id: id, tag: tag_name, name: title?.isEmpty == false ? title! : tag_name, notes: body ?? "", page: html_url,
-            published: published_at ?? created_at, isPrerelease: prerelease ?? false, isDraft: draft ?? false,
+            id: id ?? GitHubRelease.fallbackID(tag_name), tag: tag_name, name: title?.isEmpty == false ? title! : tag_name,
+            notes: body ?? "", page: html_url,
+            published: GitHubRelease.date(published_at) ?? GitHubRelease.date(created_at),
+            isPrerelease: prerelease ?? false, isDraft: draft ?? false,
             assets: (assets ?? []).map { asset in
-                GitHubRelease.Asset(id: asset.id, name: asset.name, url: asset.browser_download_url, size: asset.size ?? 0,
+                GitHubRelease.Asset(id: asset.id ?? GitHubRelease.fallbackID(asset.browser_download_url.absoluteString), name: asset.name,
+                                    url: asset.browser_download_url, size: asset.size ?? 0,
                                     sha256: asset.digest.flatMap(SHA256Hex.normalized), contentType: asset.content_type,
-                                    updated: asset.updated_at ?? asset.created_at)
+                                    updated: GitHubRelease.date(asset.updated_at) ?? GitHubRelease.date(asset.created_at),
+                                    updatedText: asset.updated_at)
             })
     }
 }

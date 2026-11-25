@@ -153,3 +153,37 @@ private func releaseJSON(id: Int = 1, tag: String = "v0.4.6", name: String? = "S
     #expect(!ReleaseVersion.isNewer("0.4.6", than: "0.4.6"))
     #expect(ReleaseVersion.trimmed("v2.8.2") == "2.8.2" && ReleaseVersion.trimmed("2.8.2") == "2.8.2")
 }
+
+@Test func keepsTheRawUpdatedText() throws {
+    let release = try GitHubRelease.decode(Data(releaseJSON().utf8))
+    #expect(release.asset(named: "SHA256SUMS")?.updatedText == "2026-03-01T12:05:00Z")
+    let fractional = """
+    {"id": 1, "tag_name": "v1", "assets": [{"id": 2, "name": "a.zip", "browser_download_url": "https://example.com/a.zip",
+      "updated_at": "2026-10-02T00:00:00.500Z"}]}
+    """
+    let asset = try #require(try GitHubRelease.decode(Data(fractional.utf8)).assets.first)
+    #expect(asset.updatedText == "2026-10-02T00:00:00.500Z")
+    #expect(asset.updated == Date(timeIntervalSince1970: 1_790_899_200.5))
+}
+
+@Test func aFeedWithoutIDsGetsStableOnes() throws {
+    let json = """
+    {"tag_name": "v2.0", "assets": [{"name": "a.zip", "browser_download_url": "https://example.com/a.zip"},
+                                    {"name": "b.zip", "browser_download_url": "https://example.com/b.zip"}]}
+    """
+    let release = try GitHubRelease.decode(Data(json.utf8))
+    let again = try GitHubRelease.decode(Data(json.utf8))
+    #expect(release.id < 0 && release.id == again.id)
+    #expect(release.assets.allSatisfy { $0.id < 0 })
+    #expect(release.assets[0].id != release.assets[1].id)
+    #expect(release.assets.map(\.id) == again.assets.map(\.id))
+}
+
+@Test func aReleaseKeptBeforeUpdatedTextStillReads() throws {
+    let old = """
+    {"id": 1, "tag": "v1", "name": "v1", "notes": "", "isPrerelease": false, "isDraft": false,
+     "assets": [{"id": 2, "name": "a.zip", "url": "https://example.com/a.zip", "size": 3}]}
+    """
+    let release = try JSONDecoder().decode(GitHubRelease.self, from: Data(old.utf8))
+    #expect(release.assets.first?.updatedText == nil && release.assets.first?.id == 2)
+}

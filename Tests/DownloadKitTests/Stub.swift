@@ -17,6 +17,8 @@ final class Stub: URLProtocol, @unchecked Sendable {
         var redirect: URL?
         /// Leaves out Content-Length.
         var noLength = false
+        /// Fails like the network would, before any answer.
+        var fails: URLError.Code?
     }
 
     typealias Handler = @Sendable (_ request: URLRequest, _ index: Int) -> Reply
@@ -73,6 +75,10 @@ final class Stub: URLProtocol, @unchecked Sendable {
             return
         }
         let reply = handler(request, index)
+        if let code = reply.fails {
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+            return
+        }
         if let target = reply.redirect {
             let response = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
             var next = URLRequest(url: target)

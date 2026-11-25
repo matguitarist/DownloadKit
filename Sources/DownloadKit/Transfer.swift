@@ -242,13 +242,24 @@ enum HTTPStatus {
         if status == 403 || status == 429 {
             if response.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
                 let reset = response.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init)
-                return .rateLimited(until: reset.map { Date(timeIntervalSince1970: $0) })
+                return .rateLimited(until: reset.map { Date(timeIntervalSince1970: $0) }, status: status)
             }
-            if let wait = response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init) {
-                return .rateLimited(until: Date.now.addingTimeInterval(wait))
+            if let until = response.value(forHTTPHeaderField: "Retry-After").flatMap({ retryAfter($0) }) {
+                return .rateLimited(until: until, status: status)
             }
         }
         return .http(status: status, url: url)
+    }
+
+    /// Retry-After as seconds ("120") or as an HTTP date ("Wed, 21 Oct 2026 07:28:00 GMT").
+    static func retryAfter(_ value: String, now: Date = .now) -> Date? {
+        let text = value.trimmingCharacters(in: .whitespaces)
+        if let seconds = TimeInterval(text) { return now.addingTimeInterval(max(0, seconds)) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: text)
     }
 
     static func check(_ response: URLResponse, url: URL) throws -> HTTPURLResponse {
@@ -259,15 +270,34 @@ enum HTTPStatus {
 }
 
 enum Retrying {
+    /// Failures a moment later can fix: the network going away (a Wi-Fi drop says notConnectedToInternet, then
+    /// cannotFindHost or secureConnectionFailed while it comes back), a dropped or slow connection, a busy server.
+    static let transientCodes: Set<URLError.Code> = [
+        .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+        .secureConnectionFailed, .dataNotAllowed, .internationalRoamingOff, .callIsActive, .badServerResponse, .resourceUnavailable,
+    ]
+
     static func isRetryable(_ error: Error) -> Bool {
         switch error {
         case let error as URLError:
-            [.timedOut, .networkConnectionLost, .cannotConnectToHost, .dnsLookupFailed, .badServerResponse, .resourceUnavailable].contains(error.code)
+            transientCodes.contains(error.code)
         case DownloadError.http(let status, _):
             status == 408 || status == 429 || (500...599).contains(status)
         default:
             false
         }
+    }
+
+    /// How long to wait before the next try, or nil when `error` isn't worth another. A rate limit is waited out
+    /// when it ends within `maxRetryAfter`.
+    static func wait(before next: Int, after error: Error, policy: RetryPolicy, now: Date = .now) -> Duration? {
+        if case DownloadError.rateLimited(let until, _) = error {
+            guard let until else { return nil }
+            let seconds = max(0, until.timeIntervalSince(now))
+            let wait = Duration.milliseconds(Int64((seconds * 1000).rounded(.up)))
+            return wait <= policy.maxRetryAfter ? wait : nil
+        }
+        return isRetryable(error) ? policy.wait(after: next - 1) : nil
     }
 
     /// Runs `body` until it works, fails in a way a retry won't fix, or runs out of tries.
@@ -278,8 +308,8 @@ enum Retrying {
                 return try await body()
             } catch {
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
-                guard attempt < policy.attempts, isRetryable(error) else { throw error }
-                try await Task.sleep(for: policy.wait(after: attempt))
+                guard attempt < policy.attempts, let wait = wait(before: attempt + 1, after: error, policy: policy) else { throw error }
+                try await Task.sleep(for: wait)
                 attempt += 1
             }
         }

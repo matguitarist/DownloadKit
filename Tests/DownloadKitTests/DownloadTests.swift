@@ -231,7 +231,7 @@ private func parts(in folder: URL) -> [String] {
     let (_, limited) = Stub.server { _, _ in
         Stub.Reply(status: 403, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1800000000"])
     }
-    await #expect(throws: DownloadError.rateLimited(until: Date(timeIntervalSince1970: 1_800_000_000))) {
+    await #expect(throws: DownloadError.rateLimited(until: Date(timeIntervalSince1970: 1_800_000_000), status: 403)) {
         try await Download.data(from: Samples.url, options: limited)
     }
 }

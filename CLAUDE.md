@@ -28,7 +28,8 @@ Shared rules for how every project is laid out and named:
 - The destination only appears when every byte is in and the hash matches; a mismatch keeps nothing.
 - A token only goes to api.github.com, and Authorization is dropped when a redirect leaves the host.
 - The User-Agent names the app, never a person.
-- No strings people read: errors are cases an app words itself.
+- Errors are cases an app words itself. `DownloadError.errorDescription` is a plain English fallback (like
+  ArchiveKit's and ProcessKit's), with no resource bundle: apps assemble their .app by hand and wouldn't carry one.
 - Tests never touch the network or the person's files: temp folders only, under `FileManager.default.temporaryDirectory`.
 - Add a test for every change. `swift build && swift test` pass with no warnings, and the iOS build, then CI on macOS.
 - Release: tag `x.y.z` and push the tag; apps use `from:`.

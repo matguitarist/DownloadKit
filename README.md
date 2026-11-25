@@ -20,7 +20,7 @@ macOS 14 or iOS 17 or later. No dependencies.
 SwiftPM (`Package.swift`):
 
 ```swift
-.package(url: "https://github.com/matguitarist/DownloadKit", from: "0.1.0"),
+.package(url: "https://github.com/matguitarist/DownloadKit", from: "0.2.0"),
 // in the target:
 .product(name: "DownloadKit", package: "DownloadKit"),
 ```
@@ -31,7 +31,7 @@ XcodeGen (`project.yml`):
 packages:
   DownloadKit:
     url: https://github.com/matguitarist/DownloadKit
-    from: 0.1.0
+    from: 0.2.0
 targets:
   App:
     dependencies:
@@ -59,14 +59,32 @@ defer { try? FileManager.default.removeItem(at: folder) }
 most ten times a second, and once at the end.
 
 A failure throws a `URLError` (offline, timed out), `CancellationError` when the task was cancelled, or a
-`DownloadError`: `.http(status:url:)`, `.rateLimited(until:)`, `.checksumMismatch(expected:actual:)`,
-`.invalidChecksum`, `.rangesNotSupported`, `.badResponse`. The app words them.
+`DownloadError`: `.http(status:url:)`, `.rateLimited(until:status:)`, `.checksumMismatch(expected:actual:)`,
+`.invalidChecksum`, `.rangesNotSupported`, `.badResponse`. The app words them; `error.status` gives the HTTP
+status of `.http` and `.rateLimited` (403 or 429), and `localizedDescription` a plain English sentence for a log
+or a case the app doesn't word itself.
+
+### Retries
+
+Every request is tried again when a moment later can fix it: no connection (a Wi-Fi drop answers
+`notConnectedToInternet`, then `cannotFindHost` or `secureConnectionFailed` while it comes back), a dropped or
+timed-out connection, a 408, 429 or 5xx. A download picks up from the byte it stopped at. A server that says how long
+to wait (Retry-After in seconds or as a date, or a rate limit's reset) is waited out when that's at most
+`maxRetryAfter` (60 s); a longer wait throws `.rateLimited` at once with its time.
+
+```swift
+options.retry = .patient                                               // 9 tries, up to 30 s apart: rides out a Wi-Fi drop
+options.retry = RetryPolicy(attempts: 4, maxRetryAfter: .seconds(120)) // wait out a rate limit of up to 2 minutes
+options.retry = .none                                                  // one try: offline is told at once
+```
 
 ### Options
 
 ```swift
 var options = DownloadOptions()
 options.userAgent = "Tadpole-macOS/1.4"           // default: "<App>/<version> DownloadKit"
+options.usesSystemUserAgent = true                // send URLSession's own ("<App>/<build> CFNetwork/… Darwin/…")
+options.prefersSuggestedFilename = true           // into: name from Content-Disposition, else the redirected URL
 options.headers = ["apikey": key]                 // Authorization is dropped when a redirect leaves the host
 options.retry = .patient                          // .standard (4 tries), .patient (9, up to 30 s apart), .none
 options.keepsPartialFile = true                   // a stopped download picks up from its part file next time
@@ -114,7 +132,8 @@ let ryujinx = try await GitHubRelease.latest(at: URL(string: "https://git.ryujin
 
 A release has `id`, `tag`, `version` (the tag without "v"), `name` (the tag when untitled), `notes`, `page`,
 `published`, `isPrerelease`, `isDraft` and `assets` (`id`, `name`, `url`, `size`, `sha256`, `contentType`,
-`updated`). It is Codable, so an app can keep the last answer for offline use. `GitHubRelease.decode(data)` reads one
+`updated`, and `updatedText`: `updated_at` exactly as the API wrote it, for an identity kept as text). A feed
+without ids gets stable negative ones (from the tag, or the asset's URL). It is Codable, so an app can keep the last answer for offline use. `GitHubRelease.decode(data)` reads one
 from JSON an app already has.
 
 `GITHUB_TOKEN` from the environment is sent to api.github.com when set (CI machines share the anonymous rate limit);
